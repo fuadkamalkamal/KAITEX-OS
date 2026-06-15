@@ -1,6 +1,6 @@
 @echo off
 echo ==========================================
-echo       AUTO COMMIT & PUSH TO GITHUB
+echo       AUTO COMMIT ^& PUSH TO GITHUB
 echo ==========================================
 echo.
 
