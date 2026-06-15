@@ -2,103 +2,120 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Hardware text mode color constants. */
-enum vga_color {
-    VGA_COLOR_BLACK = 0,
-    VGA_COLOR_BLUE = 1,
-    VGA_COLOR_GREEN = 2,
-    VGA_COLOR_CYAN = 3,
-    VGA_COLOR_RED = 4,
-    VGA_COLOR_MAGENTA = 5,
-    VGA_COLOR_BROWN = 6,
-    VGA_COLOR_LIGHT_GREY = 7,
-    VGA_COLOR_DARK_GREY = 8,
-    VGA_COLOR_LIGHT_BLUE = 9,
-    VGA_COLOR_LIGHT_GREEN = 10,
-    VGA_COLOR_LIGHT_CYAN = 11,
-    VGA_COLOR_LIGHT_RED = 12,
-    VGA_COLOR_LIGHT_MAGENTA = 13,
-    VGA_COLOR_LIGHT_BROWN = 14,
-    VGA_COLOR_WHITE = 15,
-};
-
-static inline uint8_t vga_entry_color(enum vga_color fg, enum vga_color bg) {
-    return fg | bg << 4;
-}
-
-static inline uint16_t vga_entry(unsigned char uc, uint8_t color) {
-    return (uint16_t) uc | (uint16_t) color << 8;
-}
-
-/* VGA memory starts at address 0xB8000 */
-static uint16_t* const VGA_MEMORY = (uint16_t*) 0xB8000;
-static const size_t VGA_WIDTH = 80;
-static const size_t VGA_HEIGHT = 25;
-
-size_t terminal_row;
-size_t terminal_column;
-uint8_t terminal_color;
-
-void terminal_initialize(void) {
-    terminal_row = 0;
-    terminal_column = 0;
-    terminal_color = vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+/* Multiboot Info Structure */
+typedef struct multiboot_info {
+    uint32_t flags;
+    uint32_t mem_lower;
+    uint32_t mem_upper;
+    uint32_t boot_device;
+    uint32_t cmdline;
+    uint32_t mods_count;
+    uint32_t mods_addr;
+    uint32_t syms[4];
+    uint32_t mmap_length;
+    uint32_t mmap_addr;
+    uint32_t drives_length;
+    uint32_t drives_addr;
+    uint32_t config_table;
+    uint32_t boot_loader_name;
+    uint32_t apm_table;
     
-    for (size_t y = 0; y < VGA_HEIGHT; y++) {
-        for (size_t x = 0; x < VGA_WIDTH; x++) {
-            const size_t index = y * VGA_WIDTH + x;
-            VGA_MEMORY[index] = vga_entry(' ', terminal_color);
-        }
-    }
-}
+    /* Video Info (VBE) */
+    uint32_t vbe_control_info;
+    uint32_t vbe_mode_info;
+    uint16_t vbe_mode;
+    uint16_t vbe_interface_seg;
+    uint16_t vbe_interface_off;
+    uint16_t vbe_interface_len;
 
-void terminal_putchar(char c) {
-    if (c == '\n') {
-        terminal_column = 0;
-        if (++terminal_row == VGA_HEIGHT) {
-            terminal_row = 0;
-        }
-        return;
-    }
+    /* Framebuffer Info (Multiboot 1, valid if flags bit 12 is set) */
+    uint64_t framebuffer_addr;
+    uint32_t framebuffer_pitch;
+    uint32_t framebuffer_width;
+    uint32_t framebuffer_height;
+    uint8_t framebuffer_bpp;
+    uint8_t framebuffer_type;
+    union {
+        struct {
+            uint32_t framebuffer_palette_addr;
+            uint16_t framebuffer_palette_num_colors;
+        };
+        struct {
+            uint8_t framebuffer_red_field_position;
+            uint8_t framebuffer_red_mask_size;
+            uint8_t framebuffer_green_field_position;
+            uint8_t framebuffer_green_mask_size;
+            uint8_t framebuffer_blue_field_position;
+            uint8_t framebuffer_blue_mask_size;
+        };
+    };
+} __attribute__((packed)) multiboot_info_t;
+
+static uint32_t* framebuffer = NULL;
+static uint32_t fb_width = 0;
+static uint32_t fb_height = 0;
+static uint32_t fb_pitch = 0;
+static uint8_t fb_bpp = 0;
+
+void put_pixel(uint32_t x, uint32_t y, uint32_t color) {
+    if (x >= fb_width || y >= fb_height || framebuffer == NULL) return;
     
-    const size_t index = terminal_row * VGA_WIDTH + terminal_column;
-    VGA_MEMORY[index] = vga_entry(c, terminal_color);
-    if (++terminal_column == VGA_WIDTH) {
-        terminal_column = 0;
-        if (++terminal_row == VGA_HEIGHT) {
-            terminal_row = 0;
-        }
-    }
+    // Pitch adalah ukuran satu baris dalam byte, kita pakai uint32_t pointer (4 byte)
+    uint32_t offset = (y * fb_pitch / 4) + x;
+    framebuffer[offset] = color;
 }
 
-void terminal_writestring(const char* data) {
-    for (size_t i = 0; data[i] != '\0'; i++) {
-        terminal_putchar(data[i]);
+void draw_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint32_t color) {
+    for (uint32_t i = 0; i < height; i++) {
+        for (uint32_t j = 0; j < width; j++) {
+            put_pixel(x + j, y + i, color);
+        }
     }
 }
 
 /* KERNEL ENTRY POINT */
-void kernel_main(void) {
-    terminal_initialize();
+void kernel_main(uint32_t magic, multiboot_info_t* mbi) {
+    // Memastikan diboot oleh Multiboot compliant bootloader (GRUB)
+    if (magic != 0x2BADB002) {
+        return; 
+    }
     
-    // Cetak Header
-    terminal_color = vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLUE);
-    terminal_writestring("================================================================================");
-    terminal_writestring("                             Welcome to IMPHEN-OS                               ");
-    terminal_writestring("================================================================================\n\n");
+    // Cek apakah bit 12 diset (Framebuffer info tersedia dari GRUB)
+    if (mbi->flags & (1 << 12)) {
+        framebuffer = (uint32_t*) (uint32_t) mbi->framebuffer_addr;
+        fb_width = mbi->framebuffer_width;
+        fb_height = mbi->framebuffer_height;
+        fb_pitch = mbi->framebuffer_pitch;
+        fb_bpp = mbi->framebuffer_bpp;
+    } else {
+        return; // Tidak ada mode grafis, gagal menggambar GUI
+    }
+
+    // 1. Gambar Background Penuh (Warna Biru Muda / Light Blue)
+    // Warna hex: 0x00AEEF
+    draw_rect(0, 0, fb_width, fb_height, 0x00AEEF);
+
+    // 2. Gambar Jendela (Window) Putih di tengah
+    uint32_t win_width = 600;
+    uint32_t win_height = 400;
+    uint32_t win_x = (fb_width - win_width) / 2;
+    uint32_t win_y = (fb_height - win_height) / 2;
     
-    // Cetak Pesan
-    terminal_color = vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
-    terminal_writestring("Kernel Booted Successfully!\n");
-    terminal_writestring("Sistem Operasi ini ditulis dari nol menggunakan C dan Assembly.\n\n");
+    // Border Jendela (Abu-abu)
+    draw_rect(win_x - 2, win_y - 2, win_width + 4, win_height + 4, 0x555555);
+    // Isi Jendela (Putih)
+    draw_rect(win_x, win_y, win_width, win_height, 0xFFFFFF);
     
-    terminal_color = vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
-    terminal_writestring("Ingin Menjadi Programmer Handal + IMPHNEN Namun Enggan Ngoding :)\n\n");
+    // 3. Title bar Jendela (Biru Tua)
+    uint32_t title_height = 30;
+    draw_rect(win_x, win_y, win_width, title_height, 0x0055AA);
     
-    terminal_color = vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK);
-    terminal_writestring("Memori VGA siap digunakan.\n");
-    terminal_writestring("Menunggu instruksi selanjutnya...\n");
-    
+    // 4. Tombol Close (Silang) Merah
+    uint32_t close_size = 20;
+    uint32_t close_x = win_x + win_width - close_size - 5;
+    uint32_t close_y = win_y + 5;
+    draw_rect(close_x, close_y, close_size, close_size, 0xFF0000);
+
     // Hentikan prosesor (idle loop)
     while(1) {
         __asm__ __volatile__("hlt");

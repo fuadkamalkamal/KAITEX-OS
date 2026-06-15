@@ -23,5 +23,17 @@ else
   echo "Error: File tidak dikenali sebagai Multiboot."
 fi
 
-# 5. Jalankan di QEMU (Jika ada)
-qemu-system-i386 -kernel imphen-os.bin
+# 5. Buat file ISO dengan GRUB agar mode grafis didukung
+mkdir -p isodir/boot/grub
+cp imphen-os.bin isodir/boot/imphen-os.bin
+cat > isodir/boot/grub/grub.cfg << EOF
+menuentry "IMPHEN-OS" {
+    set gfxpayload=1024x768x32
+    multiboot /boot/imphen-os.bin
+    boot
+}
+EOF
+grub-mkrescue -o imphen-os.iso isodir
+
+# 6. Jalankan di QEMU menggunakan CD-ROM (ISO)
+qemu-system-i386 -cdrom imphen-os.iso

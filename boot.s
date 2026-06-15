@@ -1,7 +1,8 @@
 /* Multiboot header */
 .set ALIGN,    1<<0             /* align loaded modules on page boundaries */
 .set MEMINFO,  1<<1             /* provide memory map */
-.set FLAGS,    ALIGN | MEMINFO  /* this is the Multiboot 'flag' field */
+.set VIDEO,    1<<2             /* request video mode */
+.set FLAGS,    ALIGN | MEMINFO | VIDEO
 .set MAGIC,    0x1BADB002       /* 'magic number' lets bootloader find the header */
 .set CHECKSUM, -(MAGIC + FLAGS) /* checksum of above, to prove we are multiboot */
 
@@ -10,6 +11,13 @@
 .long MAGIC
 .long FLAGS
 .long CHECKSUM
+/* The following 5 fields are for the ELF or AOUT executable format, we can leave them 0 since we use ELF */
+.long 0, 0, 0, 0, 0
+/* The following fields are for video mode request */
+.long 0 /* mode_type: 0 for linear graphics */
+.long 1024 /* width: 1024 px */
+.long 768 /* height: 768 px */
+.long 32 /* depth: 32 bits per pixel (BPP) */
 
 /* 
 Stack allocation. 
@@ -31,6 +39,10 @@ Entry point of the kernel.
 _start:
     /* Set up the stack pointer */
     mov $stack_top, %esp
+    
+    /* Push Multiboot Info dan Magic Number sebagai parameter untuk kernel_main */
+    push %ebx
+    push %eax
     
     /* Call the C main function */
     call kernel_main
